@@ -1,0 +1,21 @@
+extract files from installer executable using 7zip
+create directory nvvm within
+  C:\Users\thoma\Desktop\PortableApps\cuda_13.2.0_windows\cuda_nvcc\nvcc
+copy directories bin and libdevice from
+  C:\Users\thoma\Desktop\PortableApps\cuda_13.2.0_windows\libnvvm\nvvm\nvvm
+  into new directory ...\cuda_nvcc\nvcc\nvvm
+add to INCLUDE
+  C:\Users\thoma\Desktop\PortableApps\cuda_13.2.0_windows\cuda_crt\crt\include;
+  C:\Users\thoma\Desktop\PortableApps\cuda_13.2.0_windows\cuda_cudart\cudart\include;
+add to LIB
+  C:\Users\thoma\Desktop\PortableApps\cuda_13.2.0_windows\cuda_cudart\cudart\lib\x64;
+add to PATH
+  C:\Users\thoma\Desktop\PortableApps\cuda_13.2.0_windows\cuda_nvcc\nvcc\bin;
+  C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\bin\Hostx64\x64;
+then run
+  nvcc input.cu -o output.exe
+
+
+EDIT:
+add to INCLUDE (for barrier)
+  C:\Users\thoma\Desktop\PortableApps\cuda_12.6.3_561.17_windows\cuda_cccl\thrust\include;
