@@ -80,7 +80,7 @@ void allPairsShortestPathLengthCountsStepVariant(
     }
 }
 
-__global__
+__device__
 void advanceFront1D(const word_t *G, word_t *front, word_t *out, int n, int words) {
     /*
      * for source in 0..n:
@@ -102,7 +102,7 @@ void advanceFront1D(const word_t *G, word_t *front, word_t *out, int n, int word
     }
 }
 
-__global__
+__device__
 void advanceFront2D(const word_t *G, const word_t *front, word_t *out, int n, int words) {
     /*
      * for source in 0..n:
@@ -124,6 +124,31 @@ void advanceFront2D(const word_t *G, const word_t *front, word_t *out, int n, in
     if (isBitSet(front, source)) {
 //        printf("front[%i] is set => atomicOr(&out[%i], G[...] = %llu)\n", source, w, G[source * words + w]);
         atomicOr(&out[w], G[source * words + w]);
+    }
+}
+
+// Call with (words, n, n) shape.
+__global__
+void advanceFront3D(const word_t *G, const word_t *LAST, word_t *NEXT, int n, int words) {
+    /*
+     * for origin in 0..n:
+     *   for source in 0..n:
+     *     if isBitSet(&LAST[origin * words], source):
+     *       for w in 0..words:
+     *         NEXT[origin * words + w] |= G[source * words + w]
+     */
+
+    int w = blockIdx.x * blockDim.x + threadIdx.x;
+    int origin = blockIdx.y * blockDim.y + threadIdx.y;
+    int source = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (w >= words || origin >= n || source >= n) return;
+
+    // Threads with the same source should be in the same warp, preferably.
+    // This would probably make this branch more efficient, because they either all take it, or none do.
+    if (isBitSet(&LAST[origin * words], source)) {
+        // Pretty sure this is correct. And it does need to be atomic.
+        atomicOr(&NEXT[origin * words + w], G[source * words + w]);
     }
 }
 
@@ -278,61 +303,73 @@ void printMatrixGlobal(word_t *M, int n, int words) {
 }
 // endregion
 
+/*__global__
 void
 singleSourceShortestPathLengthCounts(const word_t *deviceG, word_t *deviceLAST, word_t *deviceNEXT, word_t *deviceSEEN,
-                                     word_t *deviceCOUNTS, int source, int n, int words) {
-    const int blockDimI = 16;
-    const int blockDimX = 16;
-    const int blockDimY = 16;
+                                     word_t *deviceCOUNTS, int n, int words) {
+    // x and y used by advanceFront2D
+    int source = blockIdx.x * blockDim.x + threadIdx.x;
+    int w = blockIdx.y * blockDim.y + threadIdx.y;
+    int origin = blockIdx.z * blockDim.z + threadIdx.z;
 
-    dim3 grid((n + blockDimX - 1) / blockDimX, (n + blockDimY - 1) / blockDimY);
-    dim3 wordGrid((n + blockDimX - 1) / blockDimX, (words + blockDimY - 1) / blockDimY);
-    dim3 block(blockDimX, blockDimY);
-    int wordRowGrid = (words + blockDimI - 1) / blockDimI;
-    int wordRowBlock = blockDimI;
+    if (source == 0 && w == 0) {
+        deviceCOUNTS[origin * n] = 1;
+    }
 
-    const size_t rowSize = words * sizeof(word_t);
+    // deviceCOUNTS[origin * n + 1] = countOnes(G[origin * words])
+    if (w == 0) {
+        atomicAdd(&deviceCOUNTS[origin * n + 1], deviceG[origin * words + source]);
+    }
 
-    // deviceCOUNTS[source * n] = 1;
-    word_t one = 1;
-    CUDA_CALL(cudaMemcpy(&deviceCOUNTS[source * n], &one, sizeof(word_t), cudaMemcpyHostToDevice));
-
-    // deviceCOUNTS[source * n + 1] = countOnes(G[source * words])
-    countOnesArray<<<wordRowGrid, wordRowBlock>>>(&deviceG[source * words], words, &deviceCOUNTS[source * n + 1]);
+    // sync issues?
 
     for (int level = 2; level < n; level++) {
-        advanceFront2D<<<wordGrid, block>>>(deviceG, &deviceLAST[source * words], &deviceNEXT[source * words], n,
-                                            words);
-        andNotAssign<<<wordRowGrid, wordRowBlock>>>(&deviceNEXT[source * words], &deviceSEEN[source * words], words);
-        orAssign<<<wordRowGrid, wordRowBlock>>>(&deviceSEEN[source * words], &deviceNEXT[source * words], words);
-
-        // deviceCOUNTS[source * n + level] = countOnes(NEXT[source * words])
-        countOnesArray<<<wordRowGrid, wordRowBlock>>>(&deviceNEXT[source * words], words, &deviceCOUNTS[source * n + level]);
+        advanceFront2D(deviceG, &deviceLAST[origin * words], &deviceNEXT[origin * words], n, words);
+        if (w == 0) {
+            deviceNEXT[origin * words + source] &= !deviceSEEN[origin * words + source];
+            deviceSEEN[origin * words + source] |= deviceNEXT[origin * words + source];
+            // deviceCOUNTS[origin * n + level] = countOnes(NEXT[origin * words])
+            atomicAdd(&deviceCOUNTS[origin * n + level], deviceNEXT[origin * words + source]);
+        }
 
         // early exit
-        int countBuffer;
-        CUDA_CALL(cudaMemcpy(&countBuffer, &deviceCOUNTS[source * n + level], sizeof(word_t), cudaMemcpyDeviceToHost));
-        if (countBuffer == 0) break;
+        if (deviceCOUNTS[origin * n + level] == 0) break;
 
         word_t *temp = deviceLAST;
         deviceLAST = deviceNEXT;
         deviceNEXT = temp;
 
-        CUDA_CALL(cudaMemset(&deviceNEXT[source * words], 0, rowSize));
+        if (w == 0) {
+            deviceNEXT[origin * words + source] = 0;
+        }
     }
+}*/
+
+// Should be called with (n, words) shape.
+__global__
+void
+singleSourceShortestPathLengthCountsStep(word_t *NEXT, word_t *SEEN, word_t *count, int n, int words) {
+    int origin = blockIdx.x * blockDim.x + threadIdx.x;
+    int w = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (origin >= n || w >= words) return;
+
+    NEXT[origin * words + w] &= ~SEEN[origin * words + w];
+    SEEN[origin * words + w] |= NEXT[origin * words + w];
+    atomicAdd(count, __popcll(NEXT[origin * words + w]));
 }
 
 void allPairsShortestPathLengthCounts2(const word_t *G, word_t *counts, int n, int words) {
     const int blockDimD = 16;
 
     const size_t matrixSize = n * words * sizeof(word_t);
-    const size_t countsMatrixSize = n * n * sizeof(word_t);
+    const size_t countsSize = n * sizeof(word_t);
 
     word_t *deviceG;
     word_t *deviceLAST;
     word_t *deviceNEXT;
     word_t *deviceSEEN;
-    word_t *deviceCOUNTS;
+    word_t *deviceCounts;
 
     printf("allocating device memory\n");
 
@@ -340,7 +377,7 @@ void allPairsShortestPathLengthCounts2(const word_t *G, word_t *counts, int n, i
     CUDA_CALL(cudaMalloc(&deviceLAST, matrixSize));
     CUDA_CALL(cudaMalloc(&deviceNEXT, matrixSize));
     CUDA_CALL(cudaMalloc(&deviceSEEN, matrixSize));
-    CUDA_CALL(cudaMalloc(&deviceCOUNTS, countsMatrixSize));
+    CUDA_CALL(cudaMalloc(&deviceCounts, countsSize));
 
     printf("uploading inputs\n");
 
@@ -349,24 +386,67 @@ void allPairsShortestPathLengthCounts2(const word_t *G, word_t *counts, int n, i
     CUDA_CALL(cudaMemset(deviceNEXT, 0, matrixSize));
     CUDA_CALL(cudaMemcpy(deviceSEEN, G, matrixSize, cudaMemcpyHostToDevice));
     setDiagonalBits<<<(n + blockDimD - 1) / blockDimD, blockDimD>>>(deviceSEEN, n, words);
-    CUDA_CALL(cudaMemset(deviceCOUNTS, 0, countsMatrixSize));
+    CUDA_CALL(cudaMemset(deviceCounts, 0, countsSize));
 
     printf("computing...\n");
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-    for (int source = 0; source < n; source++) {
-        singleSourceShortestPathLengthCounts(deviceG, deviceLAST, deviceNEXT, deviceSEEN, deviceCOUNTS, source, n, words);
+    const int initBlockDimX = 16;
+    const int initBlockDimY = 16;
+    dim3 initGrid((n + initBlockDimX - 1) / initBlockDimX, (words + initBlockDimY - 1) / initBlockDimY);
+    dim3 initBlock(initBlockDimX, initBlockDimY);
+
+    const int advanceBlockDimX = 32;
+    const int advanceBlockDimY = 4;
+    const int advanceBlockDimZ = 8;
+    dim3 advanceGrid((words + advanceBlockDimX - 1) / advanceBlockDimX, (n + advanceBlockDimY - 1) / advanceBlockDimY,
+                     (n + advanceBlockDimZ - 1) / advanceBlockDimZ);
+    dim3 advanceBlock(advanceBlockDimX, advanceBlockDimY, advanceBlockDimZ);
+
+    const int stepBlockDimX = 16;
+    const int stepBlockDimY = 16;
+    dim3 stepGrid((n + stepBlockDimX - 1) / stepBlockDimX, (words + stepBlockDimY - 1) / stepBlockDimY);
+    dim3 stepBlock(stepBlockDimX, stepBlockDimY);
+
+    // set counts[0] and ...[1]
+    counts[0] = n;
+    countOnes<<<initGrid, initBlock>>>(deviceG, n, words, &deviceCounts[1]);
+    CUDA_CALL(cudaMemcpy(&counts[1], &deviceCounts[1], sizeof(word_t), cudaMemcpyDeviceToHost));
+
+    for (int level = 2; level < n; level++) {
+        printf("\nlevel %i\n", level);
+//        printf("LAST:\n");
+//        printMatrixGlobal<<<1, 1>>>(deviceLAST, n, words);
+//        CUDA_CALL(cudaDeviceSynchronize());
+//        printf("SEEN:\n");
+//        printMatrixGlobal<<<1, 1>>>(deviceSEEN, n, words);
+//        CUDA_CALL(cudaDeviceSynchronize());
+
+        advanceFront3D<<<advanceGrid, advanceBlock>>>(deviceG, deviceLAST, deviceNEXT, n, words);
+
+//        printf("NEXT intermediate:\n");
+//        printMatrixGlobal<<<1, 1>>>(deviceNEXT, n, words);
+//        CUDA_CALL(cudaDeviceSynchronize());
+
+        singleSourceShortestPathLengthCountsStep<<<stepGrid, stepBlock>>>(deviceNEXT, deviceSEEN, &deviceCounts[level],
+                                                                          n, words);
+
+        CUDA_CALL(cudaMemcpy(&counts[level], &deviceCounts[level], sizeof(word_t), cudaMemcpyDeviceToHost));
+
+//        printf("NEXT:\n");
+//        printMatrixGlobal<<<1, 1>>>(deviceNEXT, n, words);
+//        CUDA_CALL(cudaDeviceSynchronize());
+//        printf("count: %llu\n", counts[level]);
+
+        if (counts[level] == 0) break;
+
+        word_t *temp = deviceLAST;
+        deviceLAST = deviceNEXT;
+        deviceNEXT = temp;
+
+        CUDA_CALL(cudaMemset(deviceNEXT, 0, matrixSize));
     }
-
-    const int blockDimX = 16;
-    const int blockDimY = 16;
-
-    dim3 sumColumnsGrid((n + blockDimX - 2) / blockDimX, (n + blockDimY - 1) / blockDimY);
-    dim3 block(blockDimX, blockDimY);
-
-    sumColumns<<<sumColumnsGrid, block>>>(deviceCOUNTS, n, n);
-    CUDA_CALL(cudaMemcpy(counts, deviceCOUNTS, n * sizeof(word_t), cudaMemcpyDeviceToHost));
 
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 
@@ -379,7 +459,7 @@ void allPairsShortestPathLengthCounts2(const word_t *G, word_t *counts, int n, i
     CUDA_CALL(cudaFree(deviceLAST));
     CUDA_CALL(cudaFree(deviceNEXT));
     CUDA_CALL(cudaFree(deviceSEEN));
-    CUDA_CALL(cudaFree(deviceCOUNTS));
+    CUDA_CALL(cudaFree(deviceCounts));
 }
 
 void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, int words) {
@@ -432,6 +512,14 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
         CUDA_CALL(cudaMemset(deviceCountBuffer, 0, sizeof(word_t)));
         CUDA_CALL(cudaMemset(deviceNEXT, 0, matrixSize));
 
+//        printf("\nlevel %i\n", level);
+//        printf("LAST:\n");
+//        printMatrixGlobal<<<1, 1>>>(deviceLAST, n, words);
+//        CUDA_CALL(cudaDeviceSynchronize());
+//        printf("SEEN:\n");
+//        printMatrixGlobal<<<1, 1>>>(deviceSEEN, n, words);
+//        CUDA_CALL(cudaDeviceSynchronize());
+
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
         // updates deviceNEXT, deviceSEEN
         allPairsShortestPathLengthCountsStepVariant<<<grid, block>>>(deviceG, deviceLAST, deviceNEXT, deviceSEEN, n,
@@ -445,6 +533,11 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
         countOnes<<<wordGrid, block>>>(deviceNEXT, n, words, deviceCountBuffer);
 
         CUDA_CALL(cudaMemcpy(&counts[level], deviceCountBuffer, sizeof(word_t), cudaMemcpyDeviceToHost));
+
+//        printf("NEXT:\n");
+//        printMatrixGlobal<<<1, 1>>>(deviceNEXT, n, words);
+//        CUDA_CALL(cudaDeviceSynchronize());
+//        printf("count: %llu\n", counts[level]);
 
         if (counts[level] == 0) break;
 
