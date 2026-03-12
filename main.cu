@@ -169,6 +169,18 @@ void setBitGlobal(word_t *array, int index) {
     array[word] |= 1ULL << bit;
 }
 
+// Stores column sums of M in the first row of M. Should be instantiated with (rows - 1, cols) total dimensions (or
+// bigger).
+__global__
+void sumColumns(word_t *M, int rows, int cols) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int col = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (row >= rows || col >= cols) return;
+
+    atomicAdd(&M[col], M[row * cols + col]);
+}
+
 // region other stuff
 __global__
 void countOnes(const word_t *M, int n, int words, word_t *count) {
@@ -266,7 +278,9 @@ void printMatrixGlobal(word_t *M, int n, int words) {
 }
 // endregion
 
-void singleSourceShortestPathLengthCounts(const word_t *deviceG, word_t *counts, int source, int n, int words) {
+void
+singleSourceShortestPathLengthCounts(const word_t *deviceG, word_t *deviceLAST, word_t *deviceNEXT, word_t *deviceSEEN,
+                                     word_t *deviceCOUNTS, int source, int n, int words) {
     const int blockDimI = 16;
     const int blockDimX = 16;
     const int blockDimY = 16;
@@ -279,114 +293,93 @@ void singleSourceShortestPathLengthCounts(const word_t *deviceG, word_t *counts,
 
     const size_t rowSize = words * sizeof(word_t);
 
-    counts[0] += 1;
+    // deviceCOUNTS[source * n] = 1;
+    word_t one = 1;
+    CUDA_CALL(cudaMemcpy(&deviceCOUNTS[source * n], &one, sizeof(word_t), cudaMemcpyHostToDevice));
 
-    word_t *deviceLAST;
-    word_t *deviceSEEN;
-    word_t *deviceNEXT;
-    word_t *deviceCountBuffer;
-
-    CUDA_CALL(cudaMalloc(&deviceLAST, rowSize));
-    CUDA_CALL(cudaMalloc(&deviceSEEN, rowSize));
-    CUDA_CALL(cudaMalloc(&deviceNEXT, rowSize));
-    CUDA_CALL(cudaMalloc(&deviceCountBuffer, sizeof(word_t)));
-
-    CUDA_CALL(cudaMemcpy(deviceLAST, &deviceG[source * words], rowSize, cudaMemcpyDeviceToDevice));
-    CUDA_CALL(cudaMemcpy(deviceSEEN, &deviceG[source * words], rowSize, cudaMemcpyDeviceToDevice));
-    CUDA_CALL(cudaMemset(deviceNEXT, 0, rowSize));
-    CUDA_CALL(cudaMemset(deviceCountBuffer, 0, sizeof(word_t)));
-
-    setBitGlobal<<<1, 1>>>(deviceSEEN, source);
-
-
-    // counts[1] += countOnes(G[source])
-    word_t countBuffer;
-    countOnesArray<<<wordRowGrid, wordRowBlock>>>(&deviceG[source * words], words, deviceCountBuffer);
-    CUDA_CALL(cudaMemcpy(&countBuffer, deviceCountBuffer, sizeof(word_t), cudaMemcpyDeviceToHost));
-//    printf("level 1 count %llu\n", countBuffer);
-    counts[1] += countBuffer;
-
-//    printf("\n== level 1 ==\n");
-//    printf("LAST:\n");
-//    printArrayGlobal<<<1, 1>>>(deviceLAST, words);
-//    CUDA_CALL(cudaDeviceSynchronize());
-//    printf("NEXT:\n");
-//    printArrayGlobal<<<1, 1>>>(deviceNEXT, words);
-//    CUDA_CALL(cudaDeviceSynchronize());
-//    printf("SEEN:\n");
-//    printArrayGlobal<<<1, 1>>>(deviceSEEN, words);
-//    CUDA_CALL(cudaDeviceSynchronize());
-//    printf("count:\n");
-//    printf("%llu\n", countBuffer);
+    // deviceCOUNTS[source * n + 1] = countOnes(G[source * words])
+    countOnesArray<<<wordRowGrid, wordRowBlock>>>(&deviceG[source * words], words, &deviceCOUNTS[source * n + 1]);
 
     for (int level = 2; level < n; level++) {
-//        printf("\n== level %i ==\n", level);
+        advanceFront2D<<<wordGrid, block>>>(deviceG, &deviceLAST[source * words], &deviceNEXT[source * words], n,
+                                            words);
+        andNotAssign<<<wordRowGrid, wordRowBlock>>>(&deviceNEXT[source * words], &deviceSEEN[source * words], words);
+        orAssign<<<wordRowGrid, wordRowBlock>>>(&deviceSEEN[source * words], &deviceNEXT[source * words], words);
 
-        advanceFront2D<<<wordGrid, block>>>(deviceG, deviceLAST, deviceNEXT, n, words);
-        andNotAssign<<<wordRowGrid, wordRowBlock>>>(deviceNEXT, deviceSEEN, words);
-        orAssign<<<wordRowGrid, wordRowBlock>>>(deviceSEEN, deviceNEXT, words);
+        // deviceCOUNTS[source * n + level] = countOnes(NEXT[source * words])
+        countOnesArray<<<wordRowGrid, wordRowBlock>>>(&deviceNEXT[source * words], words, &deviceCOUNTS[source * n + level]);
 
-        CUDA_CALL(cudaMemset(deviceCountBuffer, 0, sizeof(word_t)));
-        countOnesArray<<<wordRowGrid, wordRowBlock>>>(deviceNEXT, words, deviceCountBuffer);
-        CUDA_CALL(cudaMemcpy(&countBuffer, deviceCountBuffer, sizeof(word_t), cudaMemcpyDeviceToHost));
-
-//        printf("LAST:\n");
-//        printArrayGlobal<<<1, 1>>>(deviceLAST, words);
-//        CUDA_CALL(cudaDeviceSynchronize());
-//        printf("NEXT:\n");
-//        printArrayGlobal<<<1, 1>>>(deviceNEXT, words);
-//        CUDA_CALL(cudaDeviceSynchronize());
-//        printf("SEEN:\n");
-//        printArrayGlobal<<<1, 1>>>(deviceSEEN, words);
-//        CUDA_CALL(cudaDeviceSynchronize());
-//        printf("count:\n");
-//        printf("%llu\n", countBuffer);
-
-//        printf("level %i count %llu\n", level, countBuffer);
-        if (countBuffer == 0) {
-//            printf("breaking at level %i\n", level);
-            break;
-        }
-        counts[level] += countBuffer;
+        // early exit
+        int countBuffer;
+        CUDA_CALL(cudaMemcpy(&countBuffer, &deviceCOUNTS[source * n + level], sizeof(word_t), cudaMemcpyDeviceToHost));
+        if (countBuffer == 0) break;
 
         word_t *temp = deviceLAST;
         deviceLAST = deviceNEXT;
         deviceNEXT = temp;
 
-        CUDA_CALL(cudaMemset(deviceNEXT, 0, rowSize));
+        CUDA_CALL(cudaMemset(&deviceNEXT[source * words], 0, rowSize));
     }
-
-    CUDA_CALL(cudaFree(deviceLAST));
-    CUDA_CALL(cudaFree(deviceSEEN));
-    CUDA_CALL(cudaFree(deviceNEXT));
-    CUDA_CALL(cudaFree(deviceCountBuffer));
 }
 
 void allPairsShortestPathLengthCounts2(const word_t *G, word_t *counts, int n, int words) {
-    const size_t matrixSize = n * words * sizeof(word_t);
+    const int blockDimD = 16;
 
-    printf("\n\n");
+    const size_t matrixSize = n * words * sizeof(word_t);
+    const size_t countsMatrixSize = n * n * sizeof(word_t);
 
     word_t *deviceG;
+    word_t *deviceLAST;
+    word_t *deviceNEXT;
+    word_t *deviceSEEN;
+    word_t *deviceCOUNTS;
+
+    printf("allocating device memory\n");
+
     CUDA_CALL(cudaMalloc(&deviceG, matrixSize));
+    CUDA_CALL(cudaMalloc(&deviceLAST, matrixSize));
+    CUDA_CALL(cudaMalloc(&deviceNEXT, matrixSize));
+    CUDA_CALL(cudaMalloc(&deviceSEEN, matrixSize));
+    CUDA_CALL(cudaMalloc(&deviceCOUNTS, countsMatrixSize));
+
+    printf("uploading inputs\n");
+
     CUDA_CALL(cudaMemcpy(deviceG, G, matrixSize, cudaMemcpyHostToDevice));
+    CUDA_CALL(cudaMemcpy(deviceLAST, G, matrixSize, cudaMemcpyHostToDevice));
+    CUDA_CALL(cudaMemset(deviceNEXT, 0, matrixSize));
+    CUDA_CALL(cudaMemcpy(deviceSEEN, G, matrixSize, cudaMemcpyHostToDevice));
+    setDiagonalBits<<<(n + blockDimD - 1) / blockDimD, blockDimD>>>(deviceSEEN, n, words);
+    CUDA_CALL(cudaMemset(deviceCOUNTS, 0, countsMatrixSize));
 
     printf("computing...\n");
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
     for (int source = 0; source < n; source++) {
-//        printf("source %i...\n", source);
-        singleSourceShortestPathLengthCounts(deviceG, counts, source, n, words);
-//        break;
+        singleSourceShortestPathLengthCounts(deviceG, deviceLAST, deviceNEXT, deviceSEEN, deviceCOUNTS, source, n, words);
     }
+
+    const int blockDimX = 16;
+    const int blockDimY = 16;
+
+    dim3 sumColumnsGrid((n + blockDimX - 2) / blockDimX, (n + blockDimY - 1) / blockDimY);
+    dim3 block(blockDimX, blockDimY);
+
+    sumColumns<<<sumColumnsGrid, block>>>(deviceCOUNTS, n, n);
+    CUDA_CALL(cudaMemcpy(counts, deviceCOUNTS, n * sizeof(word_t), cudaMemcpyDeviceToHost));
 
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 
     printf("done computing, took %lli ms\n",
            std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
+    printf("freeing device memory\n");
+
     CUDA_CALL(cudaFree(deviceG));
+    CUDA_CALL(cudaFree(deviceLAST));
+    CUDA_CALL(cudaFree(deviceNEXT));
+    CUDA_CALL(cudaFree(deviceSEEN));
+    CUDA_CALL(cudaFree(deviceCOUNTS));
 }
 
 void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, int words) {
@@ -433,18 +426,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     countOnes<<<wordGrid, block>>>(deviceG, n, words, deviceCountBuffer);
     CUDA_CALL(cudaMemcpy(&counts[1], deviceCountBuffer, sizeof(word_t), cudaMemcpyDeviceToHost));
 
-//    printf("level 1\n");
-//    printf("LAST:\n");
-//    printMatrixGlobal<<<1, 1>>>(deviceLAST, n, words);
-//    CUDA_CALL(cudaDeviceSynchronize());
-//    printf("NEXT:\n");
-//    printMatrixGlobal<<<1, 1>>>(deviceNEXT, n, words);
-//    CUDA_CALL(cudaDeviceSynchronize());
-//    printf("SEEN:\n");
-//    printMatrixGlobal<<<1, 1>>>(deviceSEEN, n, words);
-//    CUDA_CALL(cudaDeviceSynchronize());
-//    printf("\n");
-
     long long stepTimeTotal = 0;
     // run proper calculation for levels >= 2
     for (int level = 2; level < n; level++) {
@@ -460,17 +441,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
         long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
         stepTimeTotal += ms;
         printf("level %i step took %lli ms\n", level, ms);
-
-//        printf("LAST:\n");
-//        printMatrixGlobal<<<1, 1>>>(deviceLAST, n, words);
-//        CUDA_CALL(cudaDeviceSynchronize());
-//        printf("NEXT:\n");
-//        printMatrixGlobal<<<1, 1>>>(deviceNEXT, n, words);
-//        CUDA_CALL(cudaDeviceSynchronize());
-//        printf("SEEN:\n");
-//        printMatrixGlobal<<<1, 1>>>(deviceSEEN, n, words);
-//        CUDA_CALL(cudaDeviceSynchronize());
-//        printf("\n");
 
         countOnes<<<wordGrid, block>>>(deviceNEXT, n, words, deviceCountBuffer);
 
@@ -526,7 +496,7 @@ int main() {
         addEdge(G, n, words, source, target);
     }
 
-    allPairsShortestPathLengthCounts(G, counts, n, words);
+    allPairsShortestPathLengthCounts2(G, counts, n, words);
 
     word_t connected_pairs = 0;
     for (int i = 0; i < n; i++) {
