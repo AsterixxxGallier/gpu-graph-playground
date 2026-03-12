@@ -43,7 +43,7 @@ void setDiagonalBits(word_t *M, int n, int words) {
 
 // Expects NEXT to be zeroed.
 __global__
-void allPairsShortestPathLengthCountsStepVariant(
+void allPairsShortestPathLengthCountsStep(
         const word_t *G,
         const word_t *LAST,
         word_t *NEXT,
@@ -77,53 +77,6 @@ void allPairsShortestPathLengthCountsStepVariant(
     if (result) {
         setBitAtomic(rowNEXT, j);
         setBitAtomic(rowSEEN, j);
-    }
-}
-
-__device__
-void advanceFront1D(const word_t *G, word_t *front, word_t *out, int n, int words) {
-    /*
-     * for source in 0..n:
-     *   if isBitSet(front, source):
-     *     for w in 0..words:
-     *       out[w] |= G[source * words][w]
-     */
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (i >= n) return;
-
-    int source = i;
-
-    if (isBitSet(front, source)) {
-        for (int w = 0; w < words; w++) {
-            atomicOr(&out[w], G[source * words + w]);
-        }
-    }
-}
-
-__device__
-void advanceFront2D(const word_t *G, const word_t *front, word_t *out, int n, int words) {
-    /*
-     * for source in 0..n:
-     *   if isBitSet(front, source):
-     *     for w in 0..words:
-     *       out[w] |= G[source * words][w]
-     */
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (i >= n || j >= words) return;
-
-    int source = i;
-    int w = j;
-
-    // TODO: Threads with the same source should be in the same warp, preferably.
-    // This would probably make this branch more efficient, because they either all take it, or none do.
-    if (isBitSet(front, source)) {
-//        printf("front[%i] is set => atomicOr(&out[%i], G[...] = %llu)\n", source, w, G[source * words + w]);
-        atomicOr(&out[w], G[source * words + w]);
     }
 }
 
@@ -469,7 +422,7 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
 
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
         // updates deviceNEXT, deviceSEEN
-        allPairsShortestPathLengthCountsStepVariant<<<grid, block>>>(deviceG, deviceLAST, deviceNEXT, deviceSEEN, n,
+        allPairsShortestPathLengthCountsStep<<<grid, block>>>(deviceG, deviceLAST, deviceNEXT, deviceSEEN, n,
                                                                      words);
         CUDA_CALL(cudaDeviceSynchronize());
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
