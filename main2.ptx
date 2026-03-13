@@ -1,0 +1,445 @@
+	// .globl	_Z14advanceFront3DPKyS0_Pyii
+.visible .entry _Z14advanceFront3DPKyS0_Pyii(
+    // G
+	.param .u64 _Z14advanceFront3DPKyS0_Pyii_param_0,
+    // LAST
+	.param .u64 _Z14advanceFront3DPKyS0_Pyii_param_1,
+    // NEXT
+	.param .u64 _Z14advanceFront3DPKyS0_Pyii_param_2,
+    // n
+	.param .u32 _Z14advanceFront3DPKyS0_Pyii_param_3,
+    // words
+	.param .u32 _Z14advanceFront3DPKyS0_Pyii_param_4
+)
+{
+    // declare virtual registers:
+    // predicate register %p<44>
+	.reg .pred 	%p<44>;
+    // untyped 32-bit register %r<68>
+	.reg .b32 	%r<68>;
+    // untyped 64-bit register %rd<183>
+	.reg .b64 	%rd<183>;
+
+    // %rd63 := G
+	ld.param.u64 	%rd63, [_Z14advanceFront3DPKyS0_Pyii_param_0];
+    // %rd64 := LAST
+	ld.param.u64 	%rd64, [_Z14advanceFront3DPKyS0_Pyii_param_1];
+    // %r24 := n
+	ld.param.u32 	%r24, [_Z14advanceFront3DPKyS0_Pyii_param_3];
+    // %r25 := words
+	ld.param.u32 	%r25, [_Z14advanceFront3DPKyS0_Pyii_param_4];
+
+	// convert addresses:
+	// %rd1 := G
+	cvta.to.global.u64 	%rd1, %rd63;
+	// %rd2 := LAST
+	cvta.to.global.u64 	%rd2, %rd64;
+
+	// %r26 := blockDim.x
+	mov.u32 	%r26, %ntid.x;
+	// %r27 := blockIdx.x
+	mov.u32 	%r27, %ctaid.x;
+	// %r28 := threadIdx.x
+	mov.u32 	%r28, %tid.x;
+	// %r1 := w = blockIdx.x * blockDim.x + threadIdx.x
+	mad.lo.s32 	%r1, %r27, %r26, %r28;
+	// %r29 := blockDim.y
+	mov.u32 	%r29, %ntid.y;
+	// %r30 := blockIdx.y
+	mov.u32 	%r30, %ctaid.y;
+	// %r31 := threadIdx.y
+	mov.u32 	%r31, %tid.y;
+	// %r2 := origin = blockIdx.y * blockDim.y + threadIdx.y
+	mad.lo.s32 	%r2, %r30, %r29, %r31;
+
+	// %p1 := w >= words
+	setp.ge.s32 	%p1, %r1, %r25;
+	// %p1 := origin >= n
+	setp.ge.s32 	%p2, %r2, %r24;
+	// %p3 := w >= words || origin >= n
+	or.pred  	%p3, %p2, %p1;
+	// if (w >= words || origin >= n) return
+	@%p3 bra 	$L__BB4_50;
+
+    // %p4 := n > 0
+	setp.gt.s32 	%p4, %r24, 0;
+	// if (n > 0) skip next instruction
+	@%p4 bra 	$L__BB4_3;
+	// jump to almost-end of function
+	bra.uni 	$L__BB4_2;
+
+$L__BB4_3:
+    // %r3 := origin * words
+	mul.lo.s32 	%r3, %r2, %r25;
+	// %rd3 := sext(words)
+	cvt.s64.s32 	%rd3, %r25;
+	// %r33 := words << 1
+	shl.b32 	%r33, %r25, 1;
+	// %rd4 := sext(words << 1)
+	cvt.s64.s32 	%rd4, %r33;
+	// %r34 := words * 3
+	mul.lo.s32 	%r34, %r25, 3;
+	// %rd5 := sext(words * 3)
+	cvt.s64.s32 	%rd5, %r34;
+
+	// %r35 := n - 1
+	add.s32 	%r35, %r24, -1;
+	// %r36 := (n - 1) >> 2
+	shr.u32 	%r36, %r35, 2;
+	// %r4  := ((n - 1) >> 2) + 1
+	add.s32 	%r4, %r36, 1;
+	// %r67 := (((n - 1) >> 2) + 1) & 3
+	and.b32  	%r67, %r4, 3;
+	// %p5  := (n - 1) < 12
+	setp.lt.u32 	%p5, %r35, 12;
+	// %rd159 := 0
+	mov.u64 	%rd159, 0;
+	// %r64 := 0
+	mov.u32 	%r64, 0;
+	// if ((n - 1) < 12) jump quite far down
+	@%p5 bra 	$L__BB4_38;
+
+    // %r63 := (((n - 1) >> 2) + 1) - ((((n - 1) >> 2) + 1) & 3)
+	sub.s32 	%r63, %r4, %r67;
+	// %rd159 := result = 0
+	mov.u64 	%rd159, 0;
+	// %r64 := source = 0
+	mov.u32 	%r64, 0;
+
+// ===================
+// ==== MAIN LOOP ====
+// ===================
+$L__BB4_5:
+    // %r38 := sourceWord = source >> 6
+	shr.u32 	%r38, %r64, 6;
+	// %r39 := sourceWord + origin * words
+	add.s32 	%r39, %r38, %r3;
+	// %rd69 := (sourceWord + origin * words) * 8
+	mul.wide.s32 	%rd69, %r39, 8;
+	// %rd7 := LAST + (sourceWord + origin * words) * 8
+	add.s64 	%rd7, %rd2, %rd69;
+	// %r40 := sourceBit = sourceWord & 48 (= sourceWord & 63)
+	and.b32  	%r40, %r64, 48;
+	// %rd70 := *(LAST + (sourceWord + origin * words) * 8)
+	ld.global.u64 	%rd70, [%rd7];
+	// %rd8 := wordLAST = *(LAST + (sourceWord + origin * words) * 8) >> sourceBit
+	shr.u64 	%rd8, %rd70, %r40;
+	// %r9  := source * words + w
+	mad.lo.s32 	%r9, %r64, %r25, %r1;
+	// %rd71 := (source * words + w) * 8
+	mul.wide.s32 	%rd71, %r9, 8;
+	// %rd9 := sectionG = G + (source * words + w) * 8
+	add.s64 	%rd9, %rd1, %rd71;
+	// %rd72 := wordLAST & 1
+	and.b64  	%rd72, %rd8, 1;
+	// %p6  := (wordLAST & 1) == 1
+	setp.eq.b64 	%p6, %rd72, 1;
+	// %p7  := 0
+	mov.pred 	%p7, 0;
+	// %p8  := ((wordLAST & 1) == 1) xor 0 = (wordLAST & 1) == 1
+	xor.pred  	%p8, %p6, %p7;
+	// %p9  := (wordLAST & 1) != 1
+	not.pred 	%p9, %p8;
+	// if ((wordLAST & 1) != 1) skip next two instructions
+	@%p9 bra 	$L__BB4_7;
+
+    // %rd73 := *sectionG
+	ld.global.u64 	%rd73, [%rd9];
+	// %rd159 |= *sectionG
+	or.b64  	%rd159, %rd73, %rd159;
+
+$L__BB4_7:
+    // %rd74 := wordLAST & 2
+	and.b64  	%rd74, %rd8, 2;
+	// %p10 := (wordLAST & 2) == 0
+	setp.eq.s64 	%p10, %rd74, 0;
+	// if ((wordLAST & 2) == 0) skip next four instructions
+	@%p10 bra 	$L__BB4_9;
+
+    // %rd75 := words << 3
+	shl.b64 	%rd75, %rd3, 3;
+	// %rd76 := sectionG + (words << 3)
+	add.s64 	%rd76, %rd9, %rd75;
+	// %rd77 := *(sectionG + (words << 3))
+	ld.global.u64 	%rd77, [%rd76];
+	// %rd159 |= *(sectionG + (words << 3))
+	or.b64  	%rd159, %rd77, %rd159;
+
+$L__BB4_9:
+    // %rd78 := wordLAST & 4
+	and.b64  	%rd78, %rd8, 4;
+	// %p11  := (wordLAST & 4) == 0
+	setp.eq.s64 	%p11, %rd78, 0;
+	// if ((wordLAST & 4) == 0) skip next four instructions
+	@%p11 bra 	$L__BB4_11;
+
+    // %rd79 := (words << 1) << 3 = words << 4
+	shl.b64 	%rd79, %rd4, 3;
+	// %rd79 := sectionG + (words << 4)
+	add.s64 	%rd80, %rd9, %rd79;
+	// %rd81 := *(sectionG + (words << 4))
+	ld.global.u64 	%rd81, [%rd80];
+	// %rd159 |= *(sectionG + (words << 4))
+	or.b64  	%rd159, %rd81, %rd159;
+
+$L__BB4_11:
+    // %rd82 := wordLAST & 8
+	and.b64  	%rd82, %rd8, 8;
+	// %p12 := (wordLAST & 8) == 0
+	setp.eq.s64 	%p12, %rd82, 0;
+	// if ((wordLAST & 8) == 0) skip next four instructions
+	@%p12 bra 	$L__BB4_13;
+
+    // %rd83 := (words * 3) << 3
+	shl.b64 	%rd83, %rd5, 3;
+	// %rd84 := sectionG + ((words * 3) << 3)
+	add.s64 	%rd84, %rd9, %rd83;
+	// %rd85 := *(sectionG + ((words * 3) << 3))
+	ld.global.u64 	%rd85, [%rd84];
+	// %rd159 |= *(sectionG + ((words * 3) << 3))
+	or.b64  	%rd159, %rd85, %rd159;
+
+$L__BB4_13:
+	mad.lo.s32 	%r52, %r64, %r25, %r1;
+	add.s32 	%r41, %r64, 4;
+	and.b32  	%r42, %r41, 52;
+	ld.global.u64 	%rd86, [%rd7];
+	shr.u64 	%rd18, %rd86, %r42;
+	shl.b32 	%r10, %r25, 2;
+	add.s32 	%r11, %r52, %r10;
+	mul.wide.s32 	%rd87, %r11, 8;
+	add.s64 	%rd19, %rd1, %rd87;
+	and.b64  	%rd88, %rd18, 1;
+	setp.eq.b64 	%p13, %rd88, 1;
+	mov.pred 	%p14, 0;
+	xor.pred  	%p15, %p13, %p14;
+	not.pred 	%p16, %p15;
+	@%p16 bra 	$L__BB4_15;
+
+	ld.global.u64 	%rd89, [%rd19];
+	or.b64  	%rd159, %rd89, %rd159;
+
+$L__BB4_15:
+	and.b64  	%rd90, %rd18, 2;
+	setp.eq.s64 	%p17, %rd90, 0;
+	@%p17 bra 	$L__BB4_17;
+
+	shl.b64 	%rd91, %rd3, 3;
+	add.s64 	%rd92, %rd19, %rd91;
+	ld.global.u64 	%rd93, [%rd92];
+	or.b64  	%rd159, %rd93, %rd159;
+
+$L__BB4_17:
+	and.b64  	%rd94, %rd18, 4;
+	setp.eq.s64 	%p18, %rd94, 0;
+	@%p18 bra 	$L__BB4_19;
+
+	shl.b64 	%rd95, %rd4, 3;
+	add.s64 	%rd96, %rd19, %rd95;
+	ld.global.u64 	%rd97, [%rd96];
+	or.b64  	%rd159, %rd97, %rd159;
+
+$L__BB4_19:
+	and.b64  	%rd98, %rd18, 8;
+	setp.eq.s64 	%p19, %rd98, 0;
+	@%p19 bra 	$L__BB4_21;
+
+	shl.b64 	%rd99, %rd5, 3;
+	add.s64 	%rd100, %rd19, %rd99;
+	ld.global.u64 	%rd101, [%rd100];
+	or.b64  	%rd159, %rd101, %rd159;
+
+$L__BB4_21:
+	shl.b32 	%r56, %r25, 2;
+	shl.b32 	%r55, %r25, 2;
+	mad.lo.s32 	%r54, %r64, %r25, %r1;
+	add.s32 	%r53, %r54, %r55;
+	add.s32 	%r43, %r64, 8;
+	and.b32  	%r44, %r43, 56;
+	ld.global.u64 	%rd102, [%rd7];
+	shr.u64 	%rd28, %rd102, %r44;
+	add.s32 	%r12, %r53, %r55;
+	mul.wide.s32 	%rd103, %r12, 8;
+	add.s64 	%rd29, %rd1, %rd103;
+	and.b64  	%rd104, %rd28, 1;
+	setp.eq.b64 	%p20, %rd104, 1;
+	mov.pred 	%p21, 0;
+	xor.pred  	%p22, %p20, %p21;
+	not.pred 	%p23, %p22;
+	@%p23 bra 	$L__BB4_23;
+
+	ld.global.u64 	%rd105, [%rd29];
+	or.b64  	%rd159, %rd105, %rd159;
+
+$L__BB4_23:
+	and.b64  	%rd106, %rd28, 2;
+	setp.eq.s64 	%p24, %rd106, 0;
+	@%p24 bra 	$L__BB4_25;
+
+	shl.b64 	%rd107, %rd3, 3;
+	add.s64 	%rd108, %rd29, %rd107;
+	ld.global.u64 	%rd109, [%rd108];
+	or.b64  	%rd159, %rd109, %rd159;
+
+$L__BB4_25:
+	and.b64  	%rd110, %rd28, 4;
+	setp.eq.s64 	%p25, %rd110, 0;
+	@%p25 bra 	$L__BB4_27;
+
+	shl.b64 	%rd111, %rd4, 3;
+	add.s64 	%rd112, %rd29, %rd111;
+	ld.global.u64 	%rd113, [%rd112];
+	or.b64  	%rd159, %rd113, %rd159;
+
+$L__BB4_27:
+	and.b64  	%rd114, %rd28, 8;
+	setp.eq.s64 	%p26, %rd114, 0;
+	@%p26 bra 	$L__BB4_29;
+
+	shl.b64 	%rd115, %rd5, 3;
+	add.s64 	%rd116, %rd29, %rd115;
+	ld.global.u64 	%rd117, [%rd116];
+	or.b64  	%rd159, %rd117, %rd159;
+
+$L__BB4_29:
+	mad.lo.s32 	%r61, %r64, %r25, %r1;
+	shl.b32 	%r60, %r25, 2;
+	add.s32 	%r59, %r61, %r60;
+	add.s32 	%r58, %r59, %r60;
+	shl.b32 	%r57, %r25, 2;
+	add.s32 	%r45, %r64, 12;
+	and.b32  	%r46, %r45, 60;
+	ld.global.u64 	%rd118, [%rd7];
+	shr.u64 	%rd38, %rd118, %r46;
+	add.s32 	%r47, %r58, %r57;
+	mul.wide.s32 	%rd119, %r47, 8;
+	add.s64 	%rd39, %rd1, %rd119;
+	and.b64  	%rd120, %rd38, 1;
+	setp.eq.b64 	%p27, %rd120, 1;
+	mov.pred 	%p28, 0;
+	xor.pred  	%p29, %p27, %p28;
+	not.pred 	%p30, %p29;
+	@%p30 bra 	$L__BB4_31;
+
+	ld.global.u64 	%rd121, [%rd39];
+	or.b64  	%rd159, %rd121, %rd159;
+
+$L__BB4_31:
+	and.b64  	%rd122, %rd38, 2;
+	setp.eq.s64 	%p31, %rd122, 0;
+	@%p31 bra 	$L__BB4_33;
+
+	shl.b64 	%rd123, %rd3, 3;
+	add.s64 	%rd124, %rd39, %rd123;
+	ld.global.u64 	%rd125, [%rd124];
+	or.b64  	%rd159, %rd125, %rd159;
+
+$L__BB4_33:
+	and.b64  	%rd126, %rd38, 4;
+	setp.eq.s64 	%p32, %rd126, 0;
+	@%p32 bra 	$L__BB4_35;
+
+	shl.b64 	%rd127, %rd4, 3;
+	add.s64 	%rd128, %rd39, %rd127;
+	ld.global.u64 	%rd129, [%rd128];
+	or.b64  	%rd159, %rd129, %rd159;
+
+$L__BB4_35:
+	and.b64  	%rd130, %rd38, 8;
+	setp.eq.s64 	%p33, %rd130, 0;
+	@%p33 bra 	$L__BB4_37;
+
+	shl.b64 	%rd131, %rd5, 3;
+	add.s64 	%rd132, %rd39, %rd131;
+	ld.global.u64 	%rd133, [%rd132];
+	or.b64  	%rd159, %rd133, %rd159;
+
+$L__BB4_37:
+	add.s32 	%r64, %r64, 16;
+	add.s32 	%r63, %r63, -4;
+	setp.ne.s32 	%p34, %r63, 0;
+	@%p34 bra 	$L__BB4_5;
+
+$L__BB4_38:
+	setp.eq.s32 	%p35, %r67, 0;
+	@%p35 bra 	$L__BB4_49;
+
+	mad.lo.s32 	%r65, %r64, %r25, %r1;
+	shl.b32 	%r17, %r25, 2;
+
+$L__BB4_40:
+	.pragma "nounroll";
+	shr.u32 	%r48, %r64, 6;
+	add.s32 	%r49, %r48, %r3;
+	mul.wide.s32 	%rd134, %r49, 8;
+	add.s64 	%rd135, %rd2, %rd134;
+	and.b32  	%r50, %r64, 60;
+	ld.global.u64 	%rd136, [%rd135];
+	shr.u64 	%rd51, %rd136, %r50;
+	mul.wide.s32 	%rd137, %r65, 8;
+	add.s64 	%rd52, %rd1, %rd137;
+	and.b64  	%rd138, %rd51, 1;
+	setp.eq.b64 	%p36, %rd138, 1;
+	mov.pred 	%p37, 0;
+	xor.pred  	%p38, %p36, %p37;
+	not.pred 	%p39, %p38;
+	@%p39 bra 	$L__BB4_42;
+
+	ld.global.u64 	%rd139, [%rd52];
+	or.b64  	%rd159, %rd139, %rd159;
+
+$L__BB4_42:
+	and.b64  	%rd140, %rd51, 2;
+	setp.eq.s64 	%p40, %rd140, 0;
+	@%p40 bra 	$L__BB4_44;
+
+	shl.b64 	%rd141, %rd3, 3;
+	add.s64 	%rd142, %rd52, %rd141;
+	ld.global.u64 	%rd143, [%rd142];
+	or.b64  	%rd159, %rd143, %rd159;
+
+$L__BB4_44:
+	and.b64  	%rd144, %rd51, 4;
+	setp.eq.s64 	%p41, %rd144, 0;
+	@%p41 bra 	$L__BB4_46;
+
+	shl.b64 	%rd145, %rd4, 3;
+	add.s64 	%rd146, %rd52, %rd145;
+	ld.global.u64 	%rd147, [%rd146];
+	or.b64  	%rd159, %rd147, %rd159;
+
+$L__BB4_46:
+	and.b64  	%rd148, %rd51, 8;
+	setp.eq.s64 	%p42, %rd148, 0;
+	@%p42 bra 	$L__BB4_48;
+
+	shl.b64 	%rd149, %rd5, 3;
+	add.s64 	%rd150, %rd52, %rd149;
+	ld.global.u64 	%rd151, [%rd150];
+	or.b64  	%rd159, %rd151, %rd159;
+
+$L__BB4_48:
+	add.s32 	%r64, %r64, 4;
+	add.s32 	%r65, %r65, %r17;
+	add.s32 	%r67, %r67, -1;
+	setp.ne.s32 	%p43, %r67, 0;
+	@%p43 bra 	$L__BB4_40;
+	bra.uni 	$L__BB4_49;
+
+$L__BB4_2:
+	mov.u64 	%rd159, 0;
+
+$L__BB4_49:
+	ld.param.u64 	%rd157, [_Z14advanceFront3DPKyS0_Pyii_param_2];
+	mad.lo.s32 	%r51, %r2, %r25, %r1;
+	cvta.to.global.u64 	%rd152, %rd157;
+	mul.wide.s32 	%rd153, %r51, 8;
+	add.s64 	%rd154, %rd152, %rd153;
+	ld.global.u64 	%rd155, [%rd154];
+	or.b64  	%rd156, %rd155, %rd159;
+	st.global.u64 	[%rd154], %rd156;
+
+$L__BB4_50:
+	ret;
+
+}

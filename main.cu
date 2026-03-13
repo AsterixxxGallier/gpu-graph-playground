@@ -8,6 +8,52 @@ const int word_mask = 63;
 
 typedef unsigned long long word_t;
 
+// region printing
+__host__ __device__
+void printWord(word_t word) {
+    for (int k = 0; k < word_size; k++) {
+        if (word & (1ULL << k)) printf("#");
+        else printf("~");
+        if ((k + 1) % 4 == 0) {
+            if ((k + 1) % 16 == 0) printf(":");
+            else printf(" ");
+        }
+    }
+}
+
+__host__ __device__
+void printArray(word_t *A, int n) {
+    for (int i = 0; i < n; i++) {
+        printWord(A[i]);
+    }
+    printf("\n");
+}
+
+__host__ __device__
+void printMatrix(word_t *M, int n, int words) {
+    for (int i = 0; i < n; i++) {
+        printArray(&M[i * words], words);
+    }
+    printf("\n");
+}
+
+__global__
+void printArrayGlobal(word_t *A, int n) {
+    for (int i = 0; i < n; i++) {
+        printWord(A[i]);
+    }
+    printf("\n");
+}
+
+__global__
+void printMatrixGlobal(word_t *M, int n, int words) {
+    for (int i = 0; i < n; i++) {
+        printArray(&M[i * words], words);
+    }
+    printf("\n");
+}
+// endregion
+
 __device__
 inline void setBitAtomic(word_t *array, int index) {
     int word = index >> word_shift; // index / word_size
@@ -217,52 +263,6 @@ if ( cudaSuccess != result )            \
 }
 // endregion
 
-// region printing
-__host__ __device__
-void printWord(word_t word) {
-    for (int k = 0; k < word_size; k++) {
-        if (word & (1ULL << k)) printf("#");
-        else printf("~");
-        if ((k + 1) % 4 == 0) {
-            if ((k + 1) % 16 == 0) printf(":");
-            else printf(" ");
-        }
-    }
-}
-
-__host__ __device__
-void printArray(word_t *A, int n) {
-    for (int i = 0; i < n; i++) {
-        printWord(A[i]);
-    }
-    printf("\n");
-}
-
-__host__ __device__
-void printMatrix(word_t *M, int n, int words) {
-    for (int i = 0; i < n; i++) {
-        printArray(&M[i * words], words);
-    }
-    printf("\n");
-}
-
-__global__
-void printArrayGlobal(word_t *A, int n) {
-    for (int i = 0; i < n; i++) {
-        printWord(A[i]);
-    }
-    printf("\n");
-}
-
-__global__
-void printMatrixGlobal(word_t *M, int n, int words) {
-    for (int i = 0; i < n; i++) {
-        printArray(&M[i * words], words);
-    }
-    printf("\n");
-}
-// endregion
-
 // Should be called with (n, words) shape.
 __global__
 void
@@ -353,7 +353,10 @@ void allPairsShortestPathLengthCounts2(const word_t *G, word_t *counts, int n, i
         deviceLAST = deviceNEXT;
         deviceNEXT = temp;
 
-        CUDA_CALL(cudaMemset(deviceNEXT, 0, matrixSize));
+        // once, there was a cudaMemset(deviceNEXT, 0, matrixSize) here
+        // but this isn't necessary, because deviceNEXT is just the last deviceLAST, which is always a subset of
+        // deviceSEEN; so, deviceNEXT (containing all deviceLAST) bits gets ORed with more bits, and after that,
+        // in deviceNEXT &= ~deviceSEEN, all these bits in deviceNEXT that were left over from deviceLAST are cleared
     }
 
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
@@ -461,7 +464,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
 int main() {
     int n = 12800;
     int words = (n + word_size - 1) / word_size;
-//    int words = 128;
     size_t matrixSize = n * words * sizeof(word_t);
     printf("n = %i, words = %i, matrix size = %zi MB\n", n, words, matrixSize / 1000000);
 
