@@ -278,12 +278,6 @@ __global__ void advanceFront(const int *adjacencyArray, const int *ceiledEdgeCou
         for (int j = 0; j < (1 << listOffsetCeilBits); j++) {
             int target = adjacencyArray[listOffset + i + j];
             word_t last = LAST[target * words + w];
-//            if (w >= 512 && last != 0) {
-//                printf("!");
-//            }
-//            if (target == 32767 && w == 513) {
-//                printf("%llu\n", last);
-//            }
             result |= last;
         }
     }
@@ -293,32 +287,16 @@ __global__ void advanceFront(const int *adjacencyArray, const int *ceiledEdgeCou
 // Should be called with (n, words) shape.
 __global__
 void
-singleSourceShortestPathLengthCountsStep(word_t *NEXT, word_t *SEEN, word_t *count, word_t *zeroCount, int n,
-                                         int words) {
+singleSourceShortestPathLengthCountsStep(word_t *NEXT, word_t *SEEN, word_t *count, int n, int words) {
     int origin = blockIdx.x * blockDim.x + threadIdx.x;
     int w = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (origin >= n || w >= words) return;
 
     NEXT[origin * words + w] &= ~SEEN[origin * words + w];
-    SEEN[origin * words + w] |= NEXT[origin * words + w];
-    word_t pop = (word_t) __popcll(NEXT[origin * words + w]);
-//    if (pop == 0) {
-        // for w >= 512 = 2**9, this prints any origin
-        // for w < 512, this prints origin >= 32768 = 2**15
-        // so: w >= 2**9 || origin >= 2**15
-        // (n * w) - (2**9 * 2**15 = 2**24) = number of bad zero words in NEXT (as printed to console)
-//        if (origin % 1 == 0 && origin <= 32790 && w == 511) {
-//            printf("origin %i, w %i\n", origin, w);
-//        }
-//        atomicAdd(zeroCount, 1);
-//    }
-//    if (pop > 0) {
-    word_t c = atomicAdd(count, pop);
-//        if (c > 960000000) {
-//            printf("%llu\n", c);
-//        }
-//    }
+    word_t next = NEXT[origin * words + w];
+    SEEN[origin * words + w] |= next;
+    word_t c = atomicAdd(count, __popcll(next));
 }
 
 void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, int words) {
@@ -335,7 +313,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     word_t *deviceNEXT;
     word_t *deviceSEEN;
     word_t *deviceCounts;
-    word_t *deviceZeroCounts;
     int *deviceEdgeCounts;
     int *deviceCeiledEdgeCounts;
     int *deviceListOffsets;
@@ -348,7 +325,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     CUDA_CALL(cudaMalloc(&deviceNEXT, matrixSize));
     CUDA_CALL(cudaMalloc(&deviceSEEN, matrixSize));
     CUDA_CALL(cudaMalloc(&deviceCounts, countsSize));
-    CUDA_CALL(cudaMalloc(&deviceZeroCounts, countsSize));
     CUDA_CALL(cudaMalloc(&deviceEdgeCounts, listOffsetsSize));
     CUDA_CALL(cudaMalloc(&deviceCeiledEdgeCounts, listOffsetsSize));
     CUDA_CALL(cudaMalloc(&deviceListOffsets, listOffsetsSize));
@@ -361,7 +337,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     CUDA_CALL(cudaMemcpy(deviceSEEN, G, matrixSize, cudaMemcpyHostToDevice));
     setDiagonalBits<<<(n + blockDimD - 1) / blockDimD, blockDimD>>>(deviceSEEN, n, words);
     CUDA_CALL(cudaMemset(deviceCounts, 0, countsSize));
-    CUDA_CALL(cudaMemset(deviceZeroCounts, 0, countsSize));
     CUDA_CALL(cudaMemset(deviceEdgeCounts, 0, listOffsetsSize));
 
     printf("computing...\n");
@@ -416,10 +391,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     fillAdjacencyArray<<<(n + blockDimD - 1) / blockDimD, blockDimD>>>(deviceG, deviceAdjacencyArray,
                                                                        deviceListOffsets, n, words);
 
-//    printArrayIntGlobal<<<1, 1>>>(deviceAdjacencyArray, n);
-
-    word_t *zeroCounts = (word_t *) malloc(countsSize);
-
     for (int level = 2; level < n; level++) {
         printf("level %i\n", level);
 
@@ -427,15 +398,12 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
                                                     deviceLAST, deviceNEXT, n, words);
 
         singleSourceShortestPathLengthCountsStep<<<stepGrid, stepBlock>>>(deviceNEXT, deviceSEEN, &deviceCounts[level],
-                                                                          &deviceZeroCounts[level], n, words);
+                                                                          n, words);
 
         CUDA_CALL(cudaMemcpy(&counts[level], &deviceCounts[level], sizeof(word_t), cudaMemcpyDeviceToHost));
-        CUDA_CALL(cudaMemcpy(&zeroCounts[level], &deviceZeroCounts[level], sizeof(word_t), cudaMemcpyDeviceToHost));
 
         // TODO: Stop in the iteration before this by checking if the sum of counts is already n * n.
         if (counts[level] == 0) break;
-        printf("count %llu\n", counts[level]);
-        printf("zero count %llu\n", zeroCounts[level]);
 
         word_t *temp = deviceLAST;
         deviceLAST = deviceNEXT;
@@ -454,7 +422,6 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     CUDA_CALL(cudaFree(deviceNEXT));
     CUDA_CALL(cudaFree(deviceSEEN));
     CUDA_CALL(cudaFree(deviceCounts));
-    CUDA_CALL(cudaFree(deviceZeroCounts));
     CUDA_CALL(cudaFree(deviceEdgeCounts));
     CUDA_CALL(cudaFree(deviceCeiledEdgeCounts));
     CUDA_CALL(cudaFree(deviceListOffsets));
@@ -484,13 +451,11 @@ int main() {
     int edgesPerNode = 10;
     int edges = n * edgesPerNode;
     for (int i = 0; i < edges; i++) {
-//        printf("%i, ", i);
         int source;
         int target;
         do {
             source = randInt() % n;
             target = randInt() % n;
-//            printf("%i, %i\n", source, target);
         } while (source == target || hasEdge(G, n, words, source, target));
 //        printf("adding edge %i -- %i\n", source, target);
         addEdge(G, n, words, source, target);
