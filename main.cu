@@ -369,6 +369,10 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     countOnes<<<initGrid, initBlock>>>(deviceG, n, words, &deviceCounts[1]);
     CUDA_CALL(cudaMemcpy(&counts[1], &deviceCounts[1], sizeof(word_t), cudaMemcpyDeviceToHost));
 
+    int totalCount = counts[0] + counts[1];
+
+    printf("converting to adjacency array\n");
+
     // prepare adjacency array
     edgeCounts<<<edgeCountsGrid, edgeCountsBlock>>>(deviceG, deviceEdgeCounts, n, words);
     ceilEdgeCounts<<<(n + blockDimD - 1) / blockDimD, blockDimD>>>(deviceEdgeCounts, deviceCeiledEdgeCounts, n);
@@ -402,8 +406,9 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
 
         CUDA_CALL(cudaMemcpy(&counts[level], &deviceCounts[level], sizeof(word_t), cudaMemcpyDeviceToHost));
 
-        // TODO: Stop in the iteration before this by checking if the sum of counts is already n * n.
-        if (counts[level] == 0) break;
+        totalCount += counts[level];
+
+        if (totalCount == n * n || counts[level] == 0) break;
 
         word_t *temp = deviceLAST;
         deviceLAST = deviceNEXT;
