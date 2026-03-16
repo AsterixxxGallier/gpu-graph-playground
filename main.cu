@@ -17,6 +17,14 @@ void printArrayInt(const int *A, int n) {
     printf("\n");
 }
 
+__global__
+void printArrayIntGlobal(const int *A, int n) {
+    for (int i = 0; i < n; i++) {
+        printf("%i, ", A[i]);
+    }
+    printf("\n");
+}
+
 __host__ __device__
 void printWord(word_t word) {
     for (int k = 0; k < word_size; k++) {
@@ -181,7 +189,7 @@ void clearBit(word_t *array, size_t index) {
 }
 
 bool hasEdge(const word_t *M, int n, int words, size_t source, size_t target) {
-    return isBitSetHost(M, source * words * word_size + target);
+    return isBitSetHost(&M[source * words], target);
 }
 
 void addEdge(word_t *M, int n, int words, size_t source, size_t target) {
@@ -266,17 +274,18 @@ __global__ void advanceFront(const int *adjacencyArray, const int *ceiledEdgeCou
     int listOffset = listOffsets[source];
     int edgeCount = ceiledEdgeCounts[source];
     word_t result = 0;
-//    printf("listOffset = %i, edgeCount = %i\n", listOffset, edgeCount);
-//    printArrayInt(&adjacencyArray[listOffset], edgeCount);
-    for (int i = 0; i < edgeCount; i += 4) {
-//        word_t word = LAST[adjacencyArray[listOffset + i] * words + w];
-//        printWord(word);
-//        printf("\n");
-//        result |= word;
-        result |= LAST[adjacencyArray[listOffset + i] * words + w];
-        result |= LAST[adjacencyArray[listOffset + i + 1] * words + w];
-        result |= LAST[adjacencyArray[listOffset + i + 2] * words + w];
-        result |= LAST[adjacencyArray[listOffset + i + 3] * words + w];
+    for (int i = 0; i < edgeCount; i += (1 << listOffsetCeilBits)) {
+        for (int j = 0; j < (1 << listOffsetCeilBits); j++) {
+            int target = adjacencyArray[listOffset + i + j];
+            word_t last = LAST[target * words + w];
+//            if (w >= 512 && last != 0) {
+//                printf("!");
+//            }
+//            if (target == 32767 && w == 513) {
+//                printf("%llu\n", last);
+//            }
+            result |= last;
+        }
     }
     NEXT[source * words + w] = result;
 }
@@ -284,7 +293,8 @@ __global__ void advanceFront(const int *adjacencyArray, const int *ceiledEdgeCou
 // Should be called with (n, words) shape.
 __global__
 void
-singleSourceShortestPathLengthCountsStep(word_t *NEXT, word_t *SEEN, word_t *count, int n, int words) {
+singleSourceShortestPathLengthCountsStep(word_t *NEXT, word_t *SEEN, word_t *count, word_t *zeroCount, int n,
+                                         int words) {
     int origin = blockIdx.x * blockDim.x + threadIdx.x;
     int w = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -292,7 +302,23 @@ singleSourceShortestPathLengthCountsStep(word_t *NEXT, word_t *SEEN, word_t *cou
 
     NEXT[origin * words + w] &= ~SEEN[origin * words + w];
     SEEN[origin * words + w] |= NEXT[origin * words + w];
-    atomicAdd(count, __popcll(NEXT[origin * words + w]));
+    word_t pop = (word_t) __popcll(NEXT[origin * words + w]);
+//    if (pop == 0) {
+        // for w >= 512 = 2**9, this prints any origin
+        // for w < 512, this prints origin >= 32768 = 2**15
+        // so: w >= 2**9 || origin >= 2**15
+        // (n * w) - (2**9 * 2**15 = 2**24) = number of bad zero words in NEXT (as printed to console)
+//        if (origin % 1 == 0 && origin <= 32790 && w == 511) {
+//            printf("origin %i, w %i\n", origin, w);
+//        }
+//        atomicAdd(zeroCount, 1);
+//    }
+//    if (pop > 0) {
+    word_t c = atomicAdd(count, pop);
+//        if (c > 960000000) {
+//            printf("%llu\n", c);
+//        }
+//    }
 }
 
 void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, int words) {
@@ -309,6 +335,7 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     word_t *deviceNEXT;
     word_t *deviceSEEN;
     word_t *deviceCounts;
+    word_t *deviceZeroCounts;
     int *deviceEdgeCounts;
     int *deviceCeiledEdgeCounts;
     int *deviceListOffsets;
@@ -321,6 +348,7 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     CUDA_CALL(cudaMalloc(&deviceNEXT, matrixSize));
     CUDA_CALL(cudaMalloc(&deviceSEEN, matrixSize));
     CUDA_CALL(cudaMalloc(&deviceCounts, countsSize));
+    CUDA_CALL(cudaMalloc(&deviceZeroCounts, countsSize));
     CUDA_CALL(cudaMalloc(&deviceEdgeCounts, listOffsetsSize));
     CUDA_CALL(cudaMalloc(&deviceCeiledEdgeCounts, listOffsetsSize));
     CUDA_CALL(cudaMalloc(&deviceListOffsets, listOffsetsSize));
@@ -333,29 +361,30 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     CUDA_CALL(cudaMemcpy(deviceSEEN, G, matrixSize, cudaMemcpyHostToDevice));
     setDiagonalBits<<<(n + blockDimD - 1) / blockDimD, blockDimD>>>(deviceSEEN, n, words);
     CUDA_CALL(cudaMemset(deviceCounts, 0, countsSize));
+    CUDA_CALL(cudaMemset(deviceZeroCounts, 0, countsSize));
     CUDA_CALL(cudaMemset(deviceEdgeCounts, 0, listOffsetsSize));
 
     printf("computing...\n");
 
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-    const int initBlockDimX = 16;
-    const int initBlockDimY = 16;
+    const int initBlockDimX = 32;
+    const int initBlockDimY = 32;
     dim3 initGrid((n + initBlockDimX - 1) / initBlockDimX, (words + initBlockDimY - 1) / initBlockDimY);
     dim3 initBlock(initBlockDimX, initBlockDimY);
 
-    const int advanceBlockDimX = 4;
-    const int advanceBlockDimY = 64;
+    const int advanceBlockDimX = 32;
+    const int advanceBlockDimY = 32;
     dim3 advanceGrid((words + advanceBlockDimX - 1) / advanceBlockDimX, (n + advanceBlockDimY - 1) / advanceBlockDimY);
     dim3 advanceBlock(advanceBlockDimX, advanceBlockDimY);
 
-    const int stepBlockDimX = 16;
-    const int stepBlockDimY = 16;
+    const int stepBlockDimX = 32;
+    const int stepBlockDimY = 32;
     dim3 stepGrid((n + stepBlockDimX - 1) / stepBlockDimX, (words + stepBlockDimY - 1) / stepBlockDimY);
     dim3 stepBlock(stepBlockDimX, stepBlockDimY);
 
-    const int edgeCountsBlockDimX = 16;
-    const int edgeCountsBlockDimY = 16;
+    const int edgeCountsBlockDimX = 32;
+    const int edgeCountsBlockDimY = 32;
     dim3 edgeCountsGrid((n + edgeCountsBlockDimX - 1) / edgeCountsBlockDimX,
                         (words + edgeCountsBlockDimY - 1) / edgeCountsBlockDimY);
     dim3 edgeCountsBlock(edgeCountsBlockDimX, edgeCountsBlockDimY);
@@ -371,18 +400,12 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
 
     CUDA_CALL(cudaMemcpy(listOffsets, deviceCeiledEdgeCounts, listOffsetsSize, cudaMemcpyDeviceToHost));
 
-//    printf("ceiled edge counts:\n");
-//    printArrayInt(listOffsets, n);
-
     int offset = 0;
     for (int i = 0; i < n; i++) {
         int edgeCount = listOffsets[i];
         listOffsets[i] = offset;
         offset += edgeCount;
     }
-
-//    printf("list offsets:\n");
-//    printArrayInt(listOffsets, n);
 
     CUDA_CALL(cudaMemcpy(deviceListOffsets, listOffsets, listOffsetsSize, cudaMemcpyHostToDevice));
 
@@ -393,32 +416,26 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     fillAdjacencyArray<<<(n + blockDimD - 1) / blockDimD, blockDimD>>>(deviceG, deviceAdjacencyArray,
                                                                        deviceListOffsets, n, words);
 
-//    int *adjacencyArray = (int *) malloc(adjacencyArraySize);
-//    CUDA_CALL(cudaMemcpy(adjacencyArray, deviceAdjacencyArray, adjacencyArraySize, cudaMemcpyDeviceToHost));
-//    printf("adjacency array:\n");
-//    printArrayInt(adjacencyArray, offset);
-//    free(adjacencyArray);
+//    printArrayIntGlobal<<<1, 1>>>(deviceAdjacencyArray, n);
+
+    word_t *zeroCounts = (word_t *) malloc(countsSize);
 
     for (int level = 2; level < n; level++) {
         printf("level %i\n", level);
 
         advanceFront<<<advanceGrid, advanceBlock>>>(deviceAdjacencyArray, deviceCeiledEdgeCounts, deviceListOffsets,
                                                     deviceLAST, deviceNEXT, n, words);
-//        for (int source = 0; source < n; source++) {
-//            for (int w = 0; w < words; w++) {
-//                printf("source = %i, w = %i\n", source, w);
-//                advanceFront<<<1, 1>>>(deviceAdjacencyArray, &deviceCeiledEdgeCounts[source], &deviceListOffsets[source],
-//                                                            &deviceLAST[w], &deviceNEXT[source * words + w], n, words);
-//                CUDA_CALL(cudaDeviceSynchronize());
-//            }
-//        }
 
         singleSourceShortestPathLengthCountsStep<<<stepGrid, stepBlock>>>(deviceNEXT, deviceSEEN, &deviceCounts[level],
-                                                                          n, words);
+                                                                          &deviceZeroCounts[level], n, words);
 
         CUDA_CALL(cudaMemcpy(&counts[level], &deviceCounts[level], sizeof(word_t), cudaMemcpyDeviceToHost));
+        CUDA_CALL(cudaMemcpy(&zeroCounts[level], &deviceZeroCounts[level], sizeof(word_t), cudaMemcpyDeviceToHost));
 
+        // TODO: Stop in the iteration before this by checking if the sum of counts is already n * n.
         if (counts[level] == 0) break;
+        printf("count %llu\n", counts[level]);
+        printf("zero count %llu\n", zeroCounts[level]);
 
         word_t *temp = deviceLAST;
         deviceLAST = deviceNEXT;
@@ -437,6 +454,7 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     CUDA_CALL(cudaFree(deviceNEXT));
     CUDA_CALL(cudaFree(deviceSEEN));
     CUDA_CALL(cudaFree(deviceCounts));
+    CUDA_CALL(cudaFree(deviceZeroCounts));
     CUDA_CALL(cudaFree(deviceEdgeCounts));
     CUDA_CALL(cudaFree(deviceCeiledEdgeCounts));
     CUDA_CALL(cudaFree(deviceListOffsets));
@@ -445,8 +463,13 @@ void allPairsShortestPathLengthCounts(const word_t *G, word_t *counts, int n, in
     free(listOffsets);
 }
 
+// range: 0 inclusive to 2**30 exclusive
+int randInt() {
+    return rand() << 15 | rand();
+}
+
 int main() {
-    int n = 12800;
+    int n = 100000;
     int words = (n + word_size - 1) / word_size;
     size_t matrixSize = n * words * sizeof(word_t);
     printf("n = %i, words = %i, matrix size = %zi MB\n", n, words, matrixSize / 1000000);
@@ -461,11 +484,13 @@ int main() {
     int edgesPerNode = 10;
     int edges = n * edgesPerNode;
     for (int i = 0; i < edges; i++) {
+//        printf("%i, ", i);
         int source;
         int target;
         do {
-            source = rand() % n;
-            target = rand() % n;
+            source = randInt() % n;
+            target = randInt() % n;
+//            printf("%i, %i\n", source, target);
         } while (source == target || hasEdge(G, n, words, source, target));
 //        printf("adding edge %i -- %i\n", source, target);
         addEdge(G, n, words, source, target);
@@ -483,7 +508,7 @@ int main() {
         connected_pairs += count;
         printf("number of pairs with shortest path length %i: %llu\n", i, count);
     }
-    printf("%llu/%i pairs connected\n", connected_pairs, n * n);
+    printf("%llu/%llu pairs connected\n", connected_pairs, ((word_t) n) * ((word_t) n));
 
     printf("freeing host memory\n");
 
